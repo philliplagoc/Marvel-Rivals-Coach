@@ -145,7 +145,7 @@ def process_player_stats_in_match(player_data, hero_id_map):
     heroes_played_stats = []
     for hero in player_data.get("player_heroes", []):
         hero_id = hero.get("hero_id")
-        hero_name = hero_id_map.get(hero_id, f"Unknown Hero: {hero_id}")
+        hero_name = hero_id_map.get(str(hero_id), f"Unknown Hero: {hero_id}")
 
         # Append specific stats
         heroes_played_stats.append({
@@ -287,7 +287,7 @@ def create_hero_id_map(hero_db):
     id_map = {}
     for hero_name, data in hero_db.items():
         if data and 'id' in data:
-            id_map[data['id']] = data['name']
+            id_map[str(data['id'])] = data['name']
     return id_map
 
 

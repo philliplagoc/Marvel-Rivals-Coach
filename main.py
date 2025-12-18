@@ -203,33 +203,54 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=No
 def convert_history_to_csv(match_data):
     """
     Converts the list of match dictionaries into a CSV string.
+    Each row represents ONE HERO played in a match (long format).
     """
     output = io.StringIO()
     writer = csv.writer(output)
 
     # Define CSV Headers
     headers = [
-        "Match ID", "Season", "Result", "Map ID", "Kills", "Deaths", "Assists", "Damage Done", "Healing Done",
-        "Damage Taken"
+        "Match ID", "Season", "Result", "Map ID", "Match Total Kills",
+        "Match Total Deaths", "Match Total Assists", "Match Total Damage Done", "Match Total Healing Done",
+        "Match Total Damage Taken", "Hero Name", "Hero Play Time (s)", "Hero Kills", "Hero Deaths", "Hero Assists"
     ]
     writer.writerow(headers)
 
     for m in match_data:
-        stats = m.get("target_player", {}).get("aggregated_stats", {})
+        match_stats = m.get("target_player", {}).get("aggregated_stats", {})
+        heroes = m.get("target_player", {}).get("heroes_played_stats", [])
 
-        row = [
-            m.get("match_uid"),
-            m.get("match_season"),
-            m.get("result"),
-            m.get("map_id"),
-            stats.get("total_kills", 0),
-            stats.get("total_deaths", 0),
-            stats.get("total_assists", 0),
-            stats.get("total_hero_damage", 0),
-            stats.get("total_hero_heal", 0),
-            stats.get("total_damage_taken", 0),
-        ]
-        writer.writerow(row)
+        if not heroes:
+            # Fallback if no hero data exists for the match
+            row = [
+                m.get("match_uid"), m.get("match_season"), m.get("result"), m.get("map_id"),
+                match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
+                match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
+                match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
+                "N/A", 0, 0, 0, 0
+            ]
+            writer.writerow(row)
+
+        for h in heroes:
+            row = [
+                # Match Context (Repeats for every hero in this match)
+                m.get("match_uid"),
+                m.get("match_season"),
+                m.get("result"),
+                m.get("map_id"),
+                match_stats.get("total_kills", 0),
+                match_stats.get("total_deaths", 0),
+                match_stats.get("total_assists", 0),
+                match_stats.get("total_hero_damage", 0),
+                match_stats.get("total_hero_heal", 0),
+                match_stats.get("total_damage_taken", 0),
+                h.get("hero_name", "Unknown"),
+                h.get("play_time_seconds", 0),
+                h.get("kills", 0),
+                h.get("deaths", 0),
+                h.get("assists", 0)
+            ]
+            writer.writerow(row)
 
     return output.getvalue()
 

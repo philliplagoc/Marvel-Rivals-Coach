@@ -1,8 +1,9 @@
-# TODO Consider architecture change. Instead of just looking at the 50 most recent matches...
+# TODO Consider architecture change. Instead of just looking at the MAX_MATCH_HISTORY_LEN most recent matches...
 #   - When asked about match history, convert the user's query into a valid request for the API
 #     Example: "How well did I do in Season 3.5?" -> Only look at match history in season 3.5
 #   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
-#     the 50 most recent matches
+#     the MAX_MATCH_HISTORY_LEN most recent matches
+# TODO Consider caching my MAX_MATCH_HISTORY_LEN most recent matches
 
 import os
 import requests
@@ -22,6 +23,7 @@ API_KEY = os.getenv("MARVEL_API_KEY")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
 TOKEN_LIMIT = 1_000_000
+MAX_MATCH_HISTORY_LEN = 100
 
 # Seasons to check (in order of priority)
 TARGET_SEASONS = [5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1]
@@ -51,7 +53,7 @@ def get_player_data(player_identifier):
         return None
 
 
-def fetch_v2_match_history(player_uid, max_matches=50):
+def fetch_v2_match_history(player_uid, max_matches=MAX_MATCH_HISTORY_LEN):
     """
     Iterates through seasons using the V2 endpoint to find the most recent matches.
     Prioritizes Season 5 down to 1.
@@ -68,12 +70,12 @@ def fetch_v2_match_history(player_uid, max_matches=50):
 
         history_status.text(f"Checking Season {season} history...")
 
-        # We request 50 to try and fill the buffer in one call per season
+        # We request MAX_MATCH_HISTORY_LEN to try and fill the buffer in one call per season
         url = f"https://marvelrivalsapi.com/api/v2/player/{player_uid}/match-history"
         params = {
             "season": season,
             "skip": 0,
-            "limit": 50
+            "limit": MAX_MATCH_HISTORY_LEN
         }
 
         try:
@@ -323,7 +325,7 @@ def get_analysis_context(user_query, player_input, hero_db):
 
                 # Step B: Get History via V2 Endpoint (Iterating Seasons)
                 status.write("Scanning Seasons for Match History (V2)...")
-                v2_history_list = fetch_v2_match_history(uid, max_matches=50)
+                v2_history_list = fetch_v2_match_history(uid, max_matches=MAX_MATCH_HISTORY_LEN)
                 status.write(f"Found {len(v2_history_list)} recent matches.")
 
                 # Step C: Parallel Fetch of Details (V1 Match Endpoint)
@@ -408,7 +410,7 @@ if prompt := st.chat_input("Ask your coach..."):
     GOAL: Answer the user's question using the provided data.
     DATA SOURCES:
     1. HERO DATABASE: General stats and ability info.
-    2. RECENT MATCH PERFORMANCE: The user's actual last 50 games.
+    2. RECENT MATCH PERFORMANCE: The user's actual last MAX_MATCH_HISTORY_LEN games.
     INSTRUCTIONS:
     - If the user asks about a specific enemy, look at the 'enemy_team_composition' in the match history. 
     - Identify if they won or lost those specific games.

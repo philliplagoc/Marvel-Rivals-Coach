@@ -10,8 +10,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 
-# TODO Debug
-
 # 1. Load Environment Variables and Constants
 load_dotenv()
 API_KEY = os.getenv("MARVEL_API_KEY")
@@ -19,31 +17,86 @@ GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
 TOKEN_LIMIT = 1_000_000
 
+# Seasons to check (in order of priority)
+TARGET_SEASONS = [5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1]
+
 # 2. Configuration & Setup
 st.set_page_config(page_title="Marvel Rivals Analyst", page_icon="🕷️")
 st.title("🕷️ Marvel Rivals Hero Analyst")
 
+
 # --- PART A: API HElPERS ---
 
-def get_player_data(player_id):
+def get_player_data(player_identifier):
     """
-    Fetches player profile and recent match summaries.
+    Fetches player profile (V1) to resolve Name -> UID and get high-level stats.
     """
-    url = f"https://marvelrivalsapi.com/api/v1/player/{player_id}"
+    # Note: This endpoint handles both Name and ID resolution
+    url = f"https://marvelrivalsapi.com/api/v1/player/{player_identifier}"
     headers = {'x-api-key': API_KEY}
 
     try:
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers)
         if response.status_code == 200:
             return response.json()
         return None
     except Exception as e:
-        print(f"Error fetching {player_id}: {e}")
+        print(f"Error fetching profile {player_identifier}: {e}")
         return None
+
+
+def fetch_v2_match_history(player_uid, max_matches=50):
+    """
+    Iterates through seasons using the V2 endpoint to find the most recent matches.
+    Prioritizes Season 5 down to 1.
+    """
+    all_history_items = []
+    headers = {'x-api-key': API_KEY}
+
+    # Progress bar specifically for history fetching
+    history_status = st.empty()
+
+    for season in TARGET_SEASONS:
+        if len(all_history_items) >= max_matches:
+            break
+
+        history_status.text(f"Checking Season {season} history...")
+
+        # We request 50 to try and fill the buffer in one call per season
+        url = f"https://marvelrivalsapi.com/api/v2/player/{player_uid}/match-history"
+        params = {
+            "season": season,
+            "skip": 0,
+            "limit": 50
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                matches = data.get("match_history", [])
+
+                if matches:
+                    all_history_items.extend(matches)
+            else:
+                print(f"Season {season} fetch failed: {response.status_code}")
+
+        except Exception as e:
+            print(f"Error fetching season {season}: {e}")
+
+    history_status.empty()
+
+    # Sort by timestamp descending (newest first) just in case seasons were mixed
+    all_history_items.sort(key=lambda x: x.get('match_time_stamp', 0), reverse=True)
+
+    # Return only the top N
+    return all_history_items[:max_matches]
+
 
 def get_match_detail(match_uid):
     """
-    Fetches detailed stats for a specific match.
+    Fetches detailed stats for a specific match (V1).
+    Required to get Enemy Team Composition.
     """
     url = f"https://marvelrivalsapi.com/api/v1/match/{match_uid}"
     headers = {'x-api-key': API_KEY}
@@ -54,8 +107,9 @@ def get_match_detail(match_uid):
             return response.json()
         return None
     except Exception as e:
-        print(f"Error fetching match {match_uid}: {e}")
+        print(f"Error fetching match detail {match_uid}: {e}")
         return None
+
 
 def process_player_stats_in_match(player_data, hero_id_map):
     """
@@ -76,7 +130,7 @@ def process_player_stats_in_match(player_data, hero_id_map):
             "kills": hero.get("kills", 0),
             "deaths": hero.get("deaths", 0),
             "assists": hero.get("assists", 0),
-            "hit_rate": f"{round(hero.get('session_hit_rate', 0) * 100, 1)}%" # Note that this should be considered a percentage
+            "hit_rate": f"{round(hero.get('session_hit_rate', 0) * 100, 1)}%"
         })
 
     return {
@@ -92,10 +146,10 @@ def process_player_stats_in_match(player_data, hero_id_map):
         "heroes_played_stats": heroes_played_stats
     }
 
+
 def minify_match_data(full_match_json, target_player_uid, hero_id_map):
     """
     Extracts only what the LLM needs to know to act as a coach.
-    Tracks performance for EVERY hero played by the user in that match.
     """
     if not full_match_json or "match_details" not in full_match_json:
         return None
@@ -113,6 +167,9 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map):
             target_camp = p.get("camp")
             user_data = p
             break
+
+    if not user_data:
+        return None
 
     # 2. Process User's stats
     target_player_stats = process_player_stats_in_match(user_data, hero_id_map)
@@ -134,74 +191,30 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map):
 
 
 # --- PART B: HERO DATABASE (CACHED) ---
-# List of heroes
 TARGET_HEROES = [
-    "Adam Warlock",
-    "Angela",
-    "Black Panther",
-    "Black Widow",
-    "Blade",
-    "Bruce Banner",
-    "Captain America",
-    "Cloak & Dagger",
-    "Daredevil",
-    "Doctor Strange",
-    "Emma Frost",
-    "Gambit",
-    "Groot",
-    "Hawkeye",
-    "Hela",
-    "Human Torch",
-    "Invisible Woman",
-    "Iron Fist",
-    "Iron Man",
-    "Jeff The Land Shark",
-    "Loki",
-    "Luna Snow",
-    "Magik",
-    "Magneto",
-    "Mantis",
-    "Mister Fantastic",
-    "Moon Knight",
-    "Namor",
-    "Peni Parker",
-    "Phoenix",
-    "Psylocke",
-    "Rocket Raccoon",
-    "Scarlet Witch",
-    "Spider-Man",
-    "Squirrel Girl",
-    "Star-Lord",
-    "Storm",
-    "The Punisher",
-    "The Thing",
-    "Thor",
-    "Ultron",
-    "Venom",
-    "Winter Soldier",
+    "Adam Warlock", "Angela", "Black Panther", "Black Widow", "Blade", "Bruce Banner",
+    "Captain America", "Cloak & Dagger", "Daredevil", "Doctor Strange", "Emma Frost",
+    "Gambit", "Groot", "Hawkeye", "Hela", "Human Torch", "Invisible Woman", "Iron Fist",
+    "Iron Man", "Jeff The Land Shark", "Loki", "Luna Snow", "Magik", "Magneto", "Mantis",
+    "Mister Fantastic", "Moon Knight", "Namor", "Peni Parker", "Phoenix", "Psylocke",
+    "Rocket Raccoon", "Scarlet Witch", "Spider-Man", "Squirrel Girl", "Star-Lord",
+    "Storm", "The Punisher", "The Thing", "Thor", "Ultron", "Venom", "Winter Soldier",
     "Wolverine"
 ]
 
+
 def create_hero_id_map(hero_db):
-    """
-    Creates a reverse lookup dictionary: { 1053: 'Emma Frost', ... }
-    """
     id_map = {}
     for hero_name, data in hero_db.items():
         if data and 'id' in data:
-            # key = ID (int), value = Name (str)
             id_map[data['id']] = data['name']
     return id_map
 
+
 def sanitize_hero_data(raw_data):
-    """
-    Strips out visual assets (URLs, icons) and huge lists (skins)
-    to save LLM tokens while keeping gameplay-relevant info.
-    """
     if not raw_data:
         return None
 
-    # extract only what the LLM needs to know about gameplay/lore
     clean_data = {
         "id": raw_data.get("id"),
         "name": raw_data.get("name"),
@@ -215,7 +228,6 @@ def sanitize_hero_data(raw_data):
         "abilities": []
     }
 
-    # Transformations
     for transformation in raw_data.get("transformations", []):
         clean_transformation = {
             "id": transformation.get("transformation_id"),
@@ -225,31 +237,23 @@ def sanitize_hero_data(raw_data):
         }
         clean_data["transformations"].append(clean_transformation)
 
-    # Abilities
     for ability in raw_data.get("abilities", []):
         clean_ability = {
             "id": ability.get("ability_id"),
-            "transformation_id": transformation.get("transformation_id"),
             "name": ability.get("name"),
             "type": ability.get("type"),
             "description": ability.get("description"),
-            "additional_fields": ability.get("additional_fields")
         }
         clean_data["abilities"].append(clean_ability)
 
     return clean_data
 
+
 @st.cache_data(ttl=3600, show_spinner="Fetching Hero Data...")
 def initialize_hero_db():
-    """
-    Iterates through TARGET_HEROES, fetches data, sanitizes it,
-    and returns a dict: { 'spider-man': { ...clean_data... } }
-    """
     hero_db = {}
     headers = {'x-api-key': API_KEY}
     base_url = "https://marvelrivalsapi.com/api/v1/heroes/hero/"
-
-    # Progress bar for UI Feedback
     progress_bar = st.progress(0, text="Initializing Hero Database...")
 
     for i, hero_name in enumerate(TARGET_HEROES):
@@ -259,14 +263,11 @@ def initialize_hero_db():
             if response.status_code == 200:
                 raw_data = response.json()
                 hero_db[hero_name.lower()] = sanitize_hero_data(raw_data)
-            else:
-                print(f"Skipping hero {hero_name}: Status Code: {response.status_code}")
         except Exception as e:
             print(f"Skipping hero {hero_name}: {e}")
 
-        # Update progress
         progress_bar.progress((i + 1) / len(TARGET_HEROES), text=f"Loaded {hero_name}...")
-        time.sleep(0.1)  # Wait a bit
+        time.sleep(0.05)
 
     progress_bar.empty()
     return hero_db
@@ -275,31 +276,18 @@ def initialize_hero_db():
 # --- PART C: DATA RETRIEVAL LOGIC ---
 
 def calculate_gemini_cost(token_count, input_cost=0.3):
-    """
-    Calculates the estimated input cost.
-    Defaults to input price for Gemini 2.5 Flash per 1M tokens.
-    """
     return (token_count / 1_000_000) * input_cost
 
-def get_analysis_context(user_query, player_input, hero_db):
-    """
-    Builds the context string.
-    1. Always includes relevant Hero Data.
-    2. If player_input (which will most likely be the player's name) is present, fetches recent matches to find patterns.
 
-    Auto-trims matches if context > 1M tokens, and calculates cost.
-    """
-    # 1. Initialize token counter
+def get_analysis_context(user_query, player_input, hero_db):
     try:
         client = genai.Client(api_key=GOOGLE_API_KEY)
     except Exception as e:
         st.error(f"Error configuring Gemini API: {e}")
         return ""
 
-    # 2. Build Static Context (Hero Info + Query)
-    #    This shouldn't be trimmed.
+    # 2. Build Static Context (Hero Info)
     static_context = " --- HERO DATABASE ---\n"
-    query_lower = user_query.lower()
     for h_name, h_data in hero_db.items():
         static_context += f"Info for {h_name}: {h_data}\n"
 
@@ -309,11 +297,11 @@ def get_analysis_context(user_query, player_input, hero_db):
 
     if player_input:
         with st.status("Fetching Coach Data...", expanded=True) as status:
+            # Step A: Get UID via V1 Player Endpoint (still needed to resolve Name -> UID)
             status.write("Fetching Player Profile...")
             player_data = get_player_data(player_input)
 
             if player_data:
-                # Get the UID
                 uid = player_data.get("uid")
 
                 # Add high level stats
@@ -322,20 +310,27 @@ def get_analysis_context(user_query, player_input, hero_db):
                 ranked = stats.get('ranked', {})
                 player_profile_str += f"TOTAL MATCHES: {stats.get('total_matches')}\n"
                 player_profile_str += f"TOTAL WINS: {stats.get('total_wins')}\n"
-                player_profile_str += f"TOTAL RANKED MATCHES: {ranked.get('total_matches')}\n"
-                player_profile_str += f"TOTAL RANKED WINS: {ranked.get('total_wins')}\n"
-                player_profile_str += f"TOTAL RANKED KDA: {ranked.get('total_kills')}/{ranked.get('total_deaths')}/{ranked.get('total_assists')}\n"
-                player_profile_str += f"TOTAL RANKED MVPs/SVPs: {ranked.get('total_mvp')}/{ranked.get('total_svp')}\n"
+                player_profile_str += f"RANKED KDA: {ranked.get('total_kills')}/{ranked.get('total_deaths')}\n"
 
-                # Get Match History
-                status.write("Analyzing recent matches...")
-                history = player_data.get("match_history", [])[:50]
+                # Step B: Get History via V2 Endpoint (Iterating Seasons)
+                status.write("Scanning Seasons for Match History (V2)...")
+                v2_history_list = fetch_v2_match_history(uid, max_matches=50)
+                status.write(f"Found {len(v2_history_list)} recent matches.")
 
-                # Fetch details in parallel
+                # Step C: Parallel Fetch of Details (V1 Match Endpoint)
+                # We need this because V2 history doesn't include Enemy Team Composition
+                status.write("Downloading detailed match logs...")
+
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    futures = {executor.submit(get_match_detail, m["match_uid"]): m for m in history}
+                    # Map future to match_uid
+                    futures = {
+                        executor.submit(get_match_detail, m["match_uid"]): m
+                        for m in v2_history_list
+                    }
+
                     for future in concurrent.futures.as_completed(futures):
                         details = future.result()
+                        # Minify will extract enemies and result
                         minified = minify_match_data(details, uid, create_hero_id_map(hero_db))
 
                         if minified:
@@ -346,120 +341,72 @@ def get_analysis_context(user_query, player_input, hero_db):
                 static_context += "\n(Could not fetch player data. API might be down or ID invalid.)\n"
 
     # 4. Trimming Loop
-    # Combine Static + Profile + Matches and check tokens.
-    # If > TOKEN_LIMIT, remove the oldest match
-
     final_context_str = ""
-
-    # Create a progress bar for the trimming process
     trim_message = st.empty()
 
     while True:
-        # Construct dynamic match string
         matches_str = f"\n--- RECENT MATCH PERFORMANCE (Last {len(match_summaries)} Matches) ---\n"
         matches_str += json.dumps(match_summaries, indent=2)
-
-        # Combine everything
         final_context_str = static_context + player_profile_str + matches_str
 
-        # Count tokens
         token_count = client.models.count_tokens(model="gemini-2.5-flash", contents=final_context_str).total_tokens
 
         if token_count <= TOKEN_LIMIT:
-            # Within limits!
             cost = calculate_gemini_cost(token_count)
-
-            # Output metrics to UI
             col1, col2, col3 = st.columns(3)
-            col1.metric("Token Count", f"{token_count:,}", help="Total tokens sent to Gemini")
-            col2.metric("Matches Included", len(match_summaries), help="Matches fit in context")
-            col3.metric("Estimated Input Cost", f"${cost:.4f}", help="Based on Gemini 2.5 Flash Pricing")
-
-            if len(match_summaries) == 0 and token_count > TOKEN_LIMIT:
-                st.error("❌ Even with 0 matches, the context is too big! Reduce Hero DB size.")
-
+            col1.metric("Token Count", f"{token_count:,}")
+            col2.metric("Matches Included", len(match_summaries))
+            col3.metric("Est. Cost", f"${cost:.4f}")
             break
         else:
-            # We are over the limit
             if not match_summaries:
-                break  # Can't trime anymore
-
-            # Remove the oldest match
-            removed_match = match_summaries.pop()
-            trim_message.warning(
-                f"⚠️ Context exceeded 1M tokens ({token_count:,}). Removing oldest match ({removed_match.get('match_uid')})...")
+                break
+            match_summaries.pop()  # Remove oldest (last in list)
 
     trim_message.empty()
     return final_context_str
 
+
 # --- PART D: APP INTERFACE ---
 
-# Sidebar for Player Setup
 with st.sidebar:
     st.header("Player Setup")
     player_uid_input = st.text_input("Enter Player Name", value="FlipFlopper")
-
     if "hero_db" not in st.session_state:
         st.session_state.hero_db = initialize_hero_db()
+    st.success(f"Hero Database Loaded ({len(st.session_state.hero_db)} heroes)")
 
-    st.success("Hero Database Loaded")
-
-    # DEBUG for hero_db
-    with st.expander("Debug: Hero Database"):
-        st.write(f"Total Heroes Loaded:** {len(st.session_state.hero_db)}")
-        st.json(st.session_state.hero_db)
-
-# Initialize Chat Model
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
 
-# Init chat history
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": "I'm ready to coach! Ask me about specific matchups."
-        }
-    ]
+        {"role": "assistant", "content": "I'm ready to coach! Ask me about specific matchups."}]
 
-# Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-
 # --- PART E: CHAT INTERFACE ---
 if prompt := st.chat_input("Ask your coach..."):
-    # Display user message
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": prompt
-        }
-    )
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message(prompt):
         st.markdown(prompt)
 
-    # Build Context
     final_context = get_analysis_context(prompt, player_uid_input, st.session_state.hero_db)
 
-    # Construct prompt
     template = """
     You are an expert eSports Coach for Marvel Rivals.
-    
     GOAL: Answer the user's question using the provided data.
-    
     DATA SOURCES:
     1. HERO DATABASE: General stats and ability info.
-    2. RECENT MATCH PERFORMANCE: The user's actual last 5 games.
-    
+    2. RECENT MATCH PERFORMANCE: The user's actual last 50 games.
     INSTRUCTIONS:
-    - If the user asks about a specific enemy (e.g., "How do I do against Dr. Strange?"), look at the 'enemy_team_composition' in the match history. 
-    - Identify if they won or lost those specific games and what their K/D/A was.
-    - Combine this with the Hero Database to give advice (e.g., "You struggled against Dr. Strange in your last match (Match ID ending in 123), dying 4 times. Dr. Strange is a Vanguard, so try to...")
-    
+    - If the user asks about a specific enemy, look at the 'enemy_team_composition' in the match history. 
+    - Identify if they won or lost those specific games.
+
     CONTEXT:
     {context}
-    
+
     USER QUESTION:
     {question}
     """
@@ -467,28 +414,11 @@ if prompt := st.chat_input("Ask your coach..."):
     custom_prompt = PromptTemplate.from_template(template)
     chain = custom_prompt | llm | StrOutputParser()
 
-    # Generate Response
     with st.chat_message("assistant"):
         with st.spinner("Analyzing..."):
             try:
-                response = chain.invoke(
-                    {
-                        "context": final_context,
-                        "question": prompt
-                    }
-                )
+                response = chain.invoke({"context": final_context, "question": prompt})
                 st.markdown(response)
-
-                # Save to history
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": response
-                    }
-                )
-
-                # Debug Expander
-                with st.expander("Debug Context"):
-                    st.text(final_context)
+                st.session_state.messages.append({"role": "assistant", "content": response})
             except Exception as e:
                 st.error(f"An error occurred: {e}")

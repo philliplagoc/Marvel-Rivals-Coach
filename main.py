@@ -4,6 +4,21 @@
 #   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
 #     the MAX_MATCH_HISTORY_LEN most recent matches
 # TODO Consider caching my MAX_MATCH_HISTORY_LEN most recent matches
+# TODO The CSV should save the hero's name, not their ID
+# TODO Debug the heroes_played_stats["hero_name"]. It's not using the hero_id_map correctly,
+#      as all match history entries contain something like:
+#       ```
+#       "heroes_played_stats": [
+#           {
+#             "hero_id": 1047,
+#             "hero_name": "Unknown Hero: 1048", <- USE THE NAME INSTEAD i.e. Psylocke
+#             "play_time_seconds": 127.5,
+#             "kills": 1,
+#             "deaths": 1,
+#             "assists": 2,
+#             "hit_rate": "63.5%"
+#           }
+#        ```
 
 import os
 import requests

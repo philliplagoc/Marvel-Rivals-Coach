@@ -1,3 +1,9 @@
+# TODO Consider architecture change. Instead of just looking at the 50 most recent matches...
+#   - When asked about match history, convert the user's query into a valid request for the API
+#     Example: "How well did I do in Season 3.5?" -> Only look at match history in season 3.5
+#   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
+#     the 50 most recent matches
+
 import os
 import requests
 import json
@@ -243,6 +249,7 @@ def sanitize_hero_data(raw_data):
             "name": ability.get("name"),
             "type": ability.get("type"),
             "description": ability.get("description"),
+            "additional_fields": ability.get("additional_fields"),
         }
         clean_data["abilities"].append(clean_ability)
 
@@ -310,6 +317,8 @@ def get_analysis_context(user_query, player_input, hero_db):
                 ranked = stats.get('ranked', {})
                 player_profile_str += f"TOTAL MATCHES: {stats.get('total_matches')}\n"
                 player_profile_str += f"TOTAL WINS: {stats.get('total_wins')}\n"
+                player_profile_str += f"RANKED TOTAL MATCHES: {ranked.get('total_matches')}\n"
+                player_profile_str += f"RANKED WINS: {ranked.get('total_wins')}\n"
                 player_profile_str += f"RANKED KDA: {ranked.get('total_kills')}/{ranked.get('total_deaths')}\n"
 
                 # Step B: Get History via V2 Endpoint (Iterating Seasons)
@@ -403,6 +412,11 @@ if prompt := st.chat_input("Ask your coach..."):
     INSTRUCTIONS:
     - If the user asks about a specific enemy, look at the 'enemy_team_composition' in the match history. 
     - Identify if they won or lost those specific games.
+    
+    Here's some lingo you should know:
+    - Vanguards can also be referred to as Tanks.
+    - Duelists can also be referred to as DPS i.e. heroes specializing in dealing lots of damage.
+    - Strategists can also be referred to Healers or Supports.
 
     CONTEXT:
     {context}

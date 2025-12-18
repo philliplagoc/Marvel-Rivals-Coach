@@ -155,7 +155,7 @@ def process_player_stats_in_match(player_data, hero_id_map):
     }
 
 
-def minify_match_data(full_match_json, target_player_uid, hero_id_map):
+def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=None):
     """
     Extracts only what the LLM needs to know to act as a coach.
     """
@@ -191,6 +191,7 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map):
     # 4. Return minified match data
     return {
         "match_uid": match_uid,
+        "match_season": season,
         "result": "WIN" if user_data.get("is_win") == 1 else "LOSE",
         "map_id": md.get("map_id"),
         "target_player": target_player_stats,
@@ -324,7 +325,7 @@ def get_analysis_context(user_query, player_input, hero_db):
                 player_profile_str += f"RANKED KDA: {ranked.get('total_kills')}/{ranked.get('total_deaths')}\n"
 
                 # Step B: Get History via V2 Endpoint (Iterating Seasons)
-                status.write("Scanning Seasons for Match History (V2)...")
+                status.write("Scanning Seasons for Match History...")
                 v2_history_list = fetch_v2_match_history(uid, max_matches=MAX_MATCH_HISTORY_LEN)
                 status.write(f"Found {len(v2_history_list)} recent matches.")
 
@@ -335,14 +336,15 @@ def get_analysis_context(user_query, player_input, hero_db):
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     # Map future to match_uid
                     futures = {
-                        executor.submit(get_match_detail, m["match_uid"]): m
-                        for m in v2_history_list
+                        executor.submit(get_match_detail, m["match_uid"]): m for m in v2_history_list
                     }
 
                     for future in concurrent.futures.as_completed(futures):
                         details = future.result()
                         # Minify will extract enemies and result
-                        minified = minify_match_data(details, uid, create_hero_id_map(hero_db))
+                        v2_data = futures[future]
+                        season = v2_data.get("match_season")
+                        minified = minify_match_data(details, uid, create_hero_id_map(hero_db), season=season)
 
                         if minified:
                             match_summaries.append(minified)
@@ -428,6 +430,12 @@ if prompt := st.chat_input("Ask your coach..."):
     """
 
     custom_prompt = PromptTemplate.from_template(template)
+
+    # For debugging
+    formatted_prompt = custom_prompt.format(context=final_context, question=prompt)
+    with st.expander("View Raw Prompt Sent to Gemini"):
+        st.code(formatted_prompt, language="text")
+
     chain = custom_prompt | llm | StrOutputParser()
 
     with st.chat_message("assistant"):

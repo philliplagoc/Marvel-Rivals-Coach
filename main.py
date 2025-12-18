@@ -10,6 +10,8 @@ import requests
 import json
 import time
 import concurrent.futures
+import csv
+import io
 import streamlit as st
 from google import genai
 from dotenv import load_dotenv
@@ -198,6 +200,39 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=No
         "enemies": enemies
     }
 
+def convert_history_to_csv(match_data):
+    """
+    Converts the list of match dictionaries into a CSV string.
+    """
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Define CSV Headers
+    headers = [
+        "Match ID", "Season", "Result", "Map ID", "Kills", "Deaths", "Assists", "Damage Done", "Healing Done",
+        "Damage Taken"
+    ]
+    writer.writerow(headers)
+
+    for m in match_data:
+        stats = m.get("target_player", {}).get("aggregated_stats", {})
+
+        row = [
+            m.get("match_uid"),
+            m.get("match_season"),
+            m.get("result"),
+            m.get("map_id"),
+            stats.get("total_kills", 0),
+            stats.get("total_deaths", 0),
+            stats.get("total_assists", 0),
+            stats.get("total_hero_damage", 0),
+            stats.get("total_hero_heal", 0),
+            stats.get("total_damage_taken", 0),
+        ]
+        writer.writerow(row)
+
+    return output.getvalue()
+
 
 # --- PART B: HERO DATABASE (CACHED) ---
 TARGET_HEROES = [
@@ -350,6 +385,9 @@ def get_analysis_context(user_query, player_input, hero_db):
                             match_summaries.append(minified)
 
                 status.update(label="Coach Data Ready!", state="complete", expanded=False)
+
+                # Save data to session state for CSV exporter
+                st.session_state["match_history_cache"] = match_summaries
             else:
                 static_context += "\n(Could not fetch player data. API might be down or ID invalid.)\n"
 
@@ -383,11 +421,26 @@ def get_analysis_context(user_query, player_input, hero_db):
 # --- PART D: APP INTERFACE ---
 
 with st.sidebar:
+    # Input Player Name
     st.header("Player Setup")
     player_uid_input = st.text_input("Enter Player Name", value="FlipFlopper")
     if "hero_db" not in st.session_state:
         st.session_state.hero_db = initialize_hero_db()
     st.success(f"Hero Database Loaded ({len(st.session_state.hero_db)} heroes)")
+
+    # CSV Download Button
+    st.divider()
+    st.header("Data Export")
+    if "match_history_cache" in st.session_state and st.session_state["match_history_cache"]:
+        csv_data = convert_history_to_csv(st.session_state["match_history_cache"])
+        st.download_button(
+            label="Download Match History",
+            data=csv_data,
+            file_name=f"marvel_rivals_match_history.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("Run a query in the chat to fetch and enable data export.")
 
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
 

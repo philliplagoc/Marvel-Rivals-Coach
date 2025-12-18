@@ -1,0 +1,14 @@
+# Ignore the virtual environment directory
+.venv/
+venv/
+env/
+
+# Ignore local configuration with secrets (CRITICAL)
+.env
+
+# Ignore PyCharm specific settings (optional, but recommended)
+.idea/
+
+# Ignore compiled python files (clutter)
+__pycache__/
+*.pyc

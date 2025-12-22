@@ -4,21 +4,14 @@
 #   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
 #     the MAX_MATCH_HISTORY_LEN most recent matches
 # TODO Consider caching my MAX_MATCH_HISTORY_LEN most recent matches
-# TODO The CSV should save the hero's name, not their ID
-# TODO Debug the heroes_played_stats["hero_name"]. It's not using the hero_id_map correctly,
-#      as all match history entries contain something like:
-#       ```
-#       "heroes_played_stats": [
-#           {
-#             "hero_id": 1047,
-#             "hero_name": "Unknown Hero: 1048", <- USE THE NAME INSTEAD i.e. Psylocke
-#             "play_time_seconds": 127.5,
-#             "kills": 1,
-#             "deaths": 1,
-#             "assists": 2,
-#             "hit_rate": "63.5%"
-#           }
-#        ```
+# TODO Debug why the CSV I download doesn't align with how the Chatbot analyzes my match history i.e. I played Magneto
+#      18 times in my last 100 matches, but the Chatbot claims I only played him 10 times. When asking this
+#      multiple times, each time the answer changes.
+# TODO Change UX flow:
+#      1. Ask for player name
+#      2. Cache the last 100 matches and hero database
+#      3. Enable a button to allow user to download a CSV of these last 100 matches
+#      4. Enable Chatbot
 
 import os
 import requests

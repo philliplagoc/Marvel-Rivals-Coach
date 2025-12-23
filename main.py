@@ -26,9 +26,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Configuration
 MODEL_NAME = "gpt-5-mini-2025-08-07"
 
-TOKEN_LIMIT = 400000 # Adjusted for typical GPT-4o-mini context window
+TOKEN_LIMIT = 400000
 MAX_MATCH_HISTORY_LEN = 50
-# NUM_RECENT_MATCHES = 50
 
 # Seasons to check (in order of priority)
 TARGET_SEASONS = [5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1]
@@ -178,7 +177,7 @@ def convert_history_to_csv(match_data):
     output = io.StringIO()
     writer = csv.writer(output)
     headers = [
-        "Match ID", "Season", "Result", "Map ID", "Match Total Kills",
+        "Match ID", "Season", "Result", "Map ID", "Side", "Match Total Kills",
         "Match Total Deaths", "Match Total Assists", "Match Total Damage Done",
         "Match Total Healing Done", "Match Total Damage Taken", "Hero Name",
         "Hero Play Time (s)", "Hero Kills", "Hero Deaths", "Hero Assists"
@@ -186,29 +185,45 @@ def convert_history_to_csv(match_data):
     writer.writerow(headers)
 
     for m in match_data:
+        # Common match metadata
+        m_id = m.get("match_uid")
+        season = m.get("match_season")
+        result = m.get("result")
+        map_id = m.get("map_id")
+
+        # Process USER (Me)
         match_stats = m.get("target_player", {}).get("aggregated_stats", {})
-        heroes = m.get("target_player", {}).get("heroes_played_stats", [])
+        user_heroes = m.get("target_player", {}).get("heroes_played_stats", [])
+        if not user_heroes:
+            writer.writerow([
+                m_id, season, result, map_id, "ME", 0, 0, 0, 0, 0, 0, "Unknown", 0, 0, 0, 0
+            ])
 
-        if not heroes:
-            row = [
-                m.get("match_uid"), m.get("match_season"), m.get("result"), m.get("map_id"),
+        for h in user_heroes:
+            writer.writerow([
+                m_id, season, result, map_id, "ME",
                 match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
                 match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
                 match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
-                "N/A", 0, 0, 0, 0
-            ]
-            writer.writerow(row)
+                h.get("hero_name", "Unknown"), h.get("play_time_seconds", 0), h.get("kills", 0), h.get("deaths", 0),
+                h.get("assists", 0)
+            ])
 
-        for h in heroes:
-            row = [
-                m.get("match_uid"), m.get("match_season"), m.get("result"), m.get("map_id"),
-                match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
-                match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
-                match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
-                h.get("hero_name", "Unknown"), h.get("play_time_seconds", 0),
-                h.get("kills", 0), h.get("deaths", 0), h.get("assists", 0)
-            ]
-            writer.writerow(row)
+        # Process ENEMIES
+        # 'enemies' is a list of player objects, each containing a 'heroes_played_stats' list
+        for enemy in m.get("enemies", []):
+            match_stats = enemy.get("aggregated_stats", {})
+            for h in enemy.get("heroes_played_stats", []):
+                # Only log significant enemy playtime to save tokens
+                if h.get("playtime_seconds", 0) > 30:
+                    writer.writerow([
+                        m_id, season, result, map_id, "ENEMY",
+                        match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
+                        match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
+                        match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
+                        h.get("hero_name", "Unknown"), h.get("play_time_seconds", 0), h.get("kills", 0),
+                        h.get("deaths", 0), h.get("assists", 0)
+                    ])
     return output.getvalue()
 
 
@@ -446,28 +461,29 @@ else:
         template = """
         ### ROLE & OBJECTIVE
         You are an elite eSports Coach for 'Marvel Rivals'.
-        Your GOAL is to analyze the user's gameplay data to provide high-level, actionable strategic advice. You do not just report stats; you identify win conditions, mistakes, and counter-play opportunities.
+        Your GOAL is to analyze the user's gameplay data to provide high-level, actionable strategic advice.
         
         ### TERMINOLOGY STANDARD
         - **Vanguard:** Tank (Focus: Space creation, mitigation)
         - **Duelist:** DPS (Focus: Securing kills, pressure)
         - **Strategist:** Healer/Support (Focus: Utility, sustain)
-        - **Team-Up:** Specific synergy bonuses between characters (e.g., Magneto + Scarlet Witch).
         
         ### DATA CONTEXT
-        1. **HERO DATABASE:** Contains stats, abilities, specific "Team-Up" synergies, and known counters for every hero.
-        2. **MATCH HISTORY:** The user's last 50 matches, including KDA, Win/Loss, Hero Played, Map, and Team Composition.
+        1. **HERO DATABASE:** Stats, abilities, and synergies.
+        2. **MATCH HISTORY (CSV):** - **Columns:** Match_ID, Season, Result, Map, Side, Hero, Stats...
+           - **'Side' Column:** "ME" indicates the user's stats. "ENEMY" indicates an opponent's stats in that same Match_ID.
+           - **Analysis Tip:** To see who the user played against in Match X, look for rows where Match_ID = X and Side = "ENEMY".
         
         ### ANALYSIS PROTOCOL
-        Before answering, strictly follow these steps:
-        1. **Trend Analysis:** Scan the [MATCH HISTORY] for patterns. Is the user dying too much (high deaths)? Are they losing on specific map types (e.g., Escort vs. Domination)?
-        2. **Hero Correlation:** Compare the user's performance on their most played heroes against the [HERO DATABASE] 'ideal stats' or 'counters'.
-        3. **Synergy Check:** If the user mentions teammates, check the [HERO DATABASE] for missed "Team-Up" opportunities.
+        1. **Matchups:** Look at matches where Side="ME" resulted in a "LOSE". Cross-reference the "ENEMY" heroes in that same Match_ID. 
+           *Example:* "You lost 3 games as Spider-Man when the Enemy had a Venom."
+        2. **Trend Analysis:** patterns in KDA or Map types.
+        3. **Hero Correlation:** Compare user performance against specific enemy compositions.
         
         ### OUTPUT GUIDELINES
-        - **Be Concise:** Use bullet points. Avoid fluff.
-        - **Strategic Depth:** Do not say "You died a lot." Say "Your high death count on Hela suggests poor positioning against Dive comps; use your mobility cooldowns defensively."
-        - **Win Condition:** Always end with one specific "Win Condition" or "Drill" the player can focus on in their next game.
+        - **Be Concise:** Use bullet points.
+        - **Identify Counters:** Specifically mention which Enemy heroes are causing the user trouble based on the CSV data.
+        - **Win Condition:** End with one specific drill or focus area.
         
         ### DATA CONTEXT
         {context}

@@ -7,9 +7,6 @@
 # TODO Debug why the CSV I download doesn't align with how the Chatbot analyzes my match history i.e. I played Magneto
 #      18 times in my last 100 matches, but the Chatbot claims I only played him 10 times. When asking this
 #      multiple times, each time the answer changes.
-# TODO Fix Error 429
-# TODO Change to OpenAI (bc billing with Gemini is weird)
-
 
 import os
 import requests
@@ -19,18 +16,20 @@ import concurrent.futures
 import csv
 import io
 import streamlit as st
-from google import genai
 from dotenv import load_dotenv
 from langchain_core.output_parsers import StrOutputParser
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 
 # 1. Load Environment Variables and Constants
 load_dotenv()
 API_KEY = os.getenv("MARVEL_API_KEY")
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-TOKEN_LIMIT = 1_000_000
+# Configuration
+MODEL_NAME = "gpt-5-mini-2025-08-07"
+
+TOKEN_LIMIT = 400000 # Adjusted for typical GPT-4o-mini context window
 MAX_MATCH_HISTORY_LEN = 50
 NUM_RECENT_MATCHES = 10
 
@@ -54,7 +53,7 @@ if "messages" not in st.session_state:
     ]
 
 
-# --- PART A: API HELPERS ---
+# --- PART A: API HELPERS (Unchanged) ---
 
 def get_player_data(player_identifier):
     """Fetches player profile (V1) to resolve Name -> UID and get high-level stats."""
@@ -308,10 +307,9 @@ def initialize_hero_db():
 # --- PART C: CORE LOGIC FOR BUILD CONTEXT ---
 
 def build_coach_context(player_input, hero_db):
-    try:
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-    except Exception as e:
-        return "", [], f"Error configuring Gemini API: {e}"
+    # Basic API Key Validation
+    if not OPENAI_API_KEY:
+        return "", [], "Error: OPENAI_API_KEY is missing from environment variables."
 
     # 1. Fetch Player Data
     player_data = get_player_data(player_input)
@@ -371,7 +369,7 @@ def build_coach_context(player_input, hero_db):
     --- PLAYER PROFILE: {player_name} ---
     {dataset_summary}
 
-    --- DETAILED LOGS (LAST NUM_RECENT_MATCHES GAMES ONLY) ---
+    --- DETAILED LOGS (LAST {NUM_RECENT_MATCHES} GAMES ONLY) ---
     {json.dumps(recent_matches_for_llm, indent=2)}
     """
 
@@ -381,7 +379,7 @@ def build_coach_context(player_input, hero_db):
 
 # --- PART D: APP INTERFACE ---
 
-st.title("🕷️ Marvel Rivals Hero Analyst")
+st.title("🕷️ Marvel Rivals Hero Analyst (OpenAI)")
 
 # Initialize Hero DB once
 if "hero_db" not in st.session_state:
@@ -438,7 +436,7 @@ else:
     st.divider()
 
     # Chat Interface
-    st.subheader("🤖 AI Coach Chat")
+    st.subheader("🤖 AI Coach Chat (GPT-4o Mini)")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -449,8 +447,8 @@ else:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Gemini Logic
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
+        # OpenAI Logic
+        llm = ChatOpenAI(model=MODEL_NAME, api_key=OPENAI_API_KEY)
 
         template = """
         You are an expert eSports Coach for Marvel Rivals.
@@ -469,7 +467,7 @@ else:
         chain = custom_prompt | llm | StrOutputParser()
 
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing match data..."):
+            with st.spinner("Analyzing match data with OpenAI..."):
                 try:
                     response = chain.invoke({
                         "context": st.session_state.llm_context,

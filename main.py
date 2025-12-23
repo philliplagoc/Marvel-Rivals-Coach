@@ -7,11 +7,9 @@
 # TODO Debug why the CSV I download doesn't align with how the Chatbot analyzes my match history i.e. I played Magneto
 #      18 times in my last 100 matches, but the Chatbot claims I only played him 10 times. When asking this
 #      multiple times, each time the answer changes.
-# TODO Change UX flow:
-#      1. Ask for player name
-#      2. Cache the last 100 matches and hero database
-#      3. Enable a button to allow user to download a CSV of these last 100 matches
-#      4. Enable Chatbot
+# TODO Fix Error 429
+# TODO Change to OpenAI (bc billing with Gemini is weird)
+
 
 import os
 import requests
@@ -33,114 +31,93 @@ API_KEY = os.getenv("MARVEL_API_KEY")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
 TOKEN_LIMIT = 1_000_000
-MAX_MATCH_HISTORY_LEN = 100
+MAX_MATCH_HISTORY_LEN = 50
+NUM_RECENT_MATCHES = 10
 
 # Seasons to check (in order of priority)
 TARGET_SEASONS = [5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1]
 
 # 2. Configuration & Setup
-st.set_page_config(page_title="Marvel Rivals Analyst", page_icon="🕷️")
-st.title("🕷️ Marvel Rivals Hero Analyst")
+st.set_page_config(page_title="Marvel Rivals Analyst", page_icon="🕷️", layout="wide")
+
+# Initialize Session State Variables
+if "analysis_active" not in st.session_state:
+    st.session_state.analysis_active = False
+if "llm_context" not in st.session_state:
+    st.session_state.llm_context = ""
+if "match_history_data" not in st.session_state:
+    st.session_state.match_history_data = []
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant",
+         "content": "I'm ready to coach! Ask me about specific matchups or your recent performance."}
+    ]
 
 
-# --- PART A: API HElPERS ---
+# --- PART A: API HELPERS ---
 
 def get_player_data(player_identifier):
-    """
-    Fetches player profile (V1) to resolve Name -> UID and get high-level stats.
-    """
-    # Note: This endpoint handles both Name and ID resolution
+    """Fetches player profile (V1) to resolve Name -> UID and get high-level stats."""
     url = f"https://marvelrivalsapi.com/api/v1/player/{player_identifier}"
     headers = {'x-api-key': API_KEY}
-
     try:
         response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        return None
+        return response.json() if response.status_code == 200 else None
     except Exception as e:
         print(f"Error fetching profile {player_identifier}: {e}")
         return None
 
 
 def fetch_v2_match_history(player_uid, max_matches=MAX_MATCH_HISTORY_LEN):
-    """
-    Iterates through seasons using the V2 endpoint to find the most recent matches.
-    Prioritizes Season 5 down to 1.
-    """
+    """Iterates through seasons using the V2 endpoint to find the most recent matches."""
     all_history_items = []
     headers = {'x-api-key': API_KEY}
 
-    # Progress bar specifically for history fetching
-    history_status = st.empty()
+    status_text = st.empty()
 
     for season in TARGET_SEASONS:
         if len(all_history_items) >= max_matches:
             break
 
-        history_status.text(f"Checking Season {season} history...")
-
-        # We request MAX_MATCH_HISTORY_LEN to try and fill the buffer in one call per season
+        status_text.text(f"Scanning Season {season} history...")
         url = f"https://marvelrivalsapi.com/api/v2/player/{player_uid}/match-history"
-        params = {
-            "season": season,
-            "skip": 0,
-            "limit": MAX_MATCH_HISTORY_LEN
-        }
+        params = {"season": season, "skip": 0, "limit": MAX_MATCH_HISTORY_LEN}
 
         try:
             response = requests.get(url, headers=headers, params=params)
             if response.status_code == 200:
                 data = response.json()
                 matches = data.get("match_history", [])
-
                 if matches:
                     all_history_items.extend(matches)
-            else:
-                print(f"Season {season} fetch failed: {response.status_code}")
-
         except Exception as e:
             print(f"Error fetching season {season}: {e}")
 
-    history_status.empty()
+    status_text.empty()
 
-    # Sort by timestamp descending (newest first) just in case seasons were mixed
+    # Sort by timestamp descending (newest first)
     all_history_items.sort(key=lambda x: x.get('match_time_stamp', 0), reverse=True)
-
-    # Return only the top N
     return all_history_items[:max_matches]
 
 
 def get_match_detail(match_uid):
-    """
-    Fetches detailed stats for a specific match (V1).
-    Required to get Enemy Team Composition.
-    """
+    """Fetches detailed stats for a specific match (V1)."""
     url = f"https://marvelrivalsapi.com/api/v1/match/{match_uid}"
     headers = {'x-api-key': API_KEY}
-
     try:
         response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        return None
+        return response.json() if response.status_code == 200 else None
     except Exception as e:
         print(f"Error fetching match detail {match_uid}: {e}")
         return None
 
 
 def process_player_stats_in_match(player_data, hero_id_map):
-    """
-    Processes important stats for a specific player for a specific match.
-    Helper function for minify function.
-    """
-    # Process player's heroes
+    """Helper to structure player stats."""
     heroes_played_stats = []
     for hero in player_data.get("player_heroes", []):
         hero_id = hero.get("hero_id")
         hero_name = hero_id_map.get(str(hero_id), f"Unknown Hero: {hero_id}")
-
-        # Append specific stats
         heroes_played_stats.append({
             "hero_id": hero_id,
             "hero_name": hero_name,
@@ -166,20 +143,15 @@ def process_player_stats_in_match(player_data, hero_id_map):
 
 
 def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=None):
-    """
-    Extracts only what the LLM needs to know to act as a coach.
-    """
+    """Extracts only essential data for the LLM."""
     if not full_match_json or "match_details" not in full_match_json:
         return None
 
     md = full_match_json["match_details"]
     match_uid = md.get("match_uid")
-
-    # Identify user and their team camp
     target_camp = -1
     user_data = None
 
-    # 1. Find target player
     for p in md.get("match_players", []):
         if str(p.get("player_uid")) == str(target_player_uid):
             target_camp = p.get("camp")
@@ -189,16 +161,12 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=No
     if not user_data:
         return None
 
-    # 2. Process User's stats
     target_player_stats = process_player_stats_in_match(user_data, hero_id_map)
-
-    # 3. Identify enemy team comp
     enemies = []
     for p in md.get("match_players", []):
         if p.get("camp") != target_camp:
             enemies.append(process_player_stats_in_match(p, hero_id_map))
 
-    # 4. Return minified match data
     return {
         "match_uid": match_uid,
         "match_season": season,
@@ -208,19 +176,16 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=No
         "enemies": enemies
     }
 
+
 def convert_history_to_csv(match_data):
-    """
-    Converts the list of match dictionaries into a CSV string.
-    Each row represents ONE HERO played in a match (long format).
-    """
+    """Converts match list to CSV string."""
     output = io.StringIO()
     writer = csv.writer(output)
-
-    # Define CSV Headers
     headers = [
         "Match ID", "Season", "Result", "Map ID", "Match Total Kills",
-        "Match Total Deaths", "Match Total Assists", "Match Total Damage Done", "Match Total Healing Done",
-        "Match Total Damage Taken", "Hero Name", "Hero Play Time (s)", "Hero Kills", "Hero Deaths", "Hero Assists"
+        "Match Total Deaths", "Match Total Assists", "Match Total Damage Done",
+        "Match Total Healing Done", "Match Total Damage Taken", "Hero Name",
+        "Hero Play Time (s)", "Hero Kills", "Hero Deaths", "Hero Assists"
     ]
     writer.writerow(headers)
 
@@ -229,7 +194,6 @@ def convert_history_to_csv(match_data):
         heroes = m.get("target_player", {}).get("heroes_played_stats", [])
 
         if not heroes:
-            # Fallback if no hero data exists for the match
             row = [
                 m.get("match_uid"), m.get("match_season"), m.get("result"), m.get("map_id"),
                 match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
@@ -241,26 +205,48 @@ def convert_history_to_csv(match_data):
 
         for h in heroes:
             row = [
-                # Match Context (Repeats for every hero in this match)
-                m.get("match_uid"),
-                m.get("match_season"),
-                m.get("result"),
-                m.get("map_id"),
-                match_stats.get("total_kills", 0),
-                match_stats.get("total_deaths", 0),
-                match_stats.get("total_assists", 0),
-                match_stats.get("total_hero_damage", 0),
-                match_stats.get("total_hero_heal", 0),
-                match_stats.get("total_damage_taken", 0),
-                h.get("hero_name", "Unknown"),
-                h.get("play_time_seconds", 0),
-                h.get("kills", 0),
-                h.get("deaths", 0),
-                h.get("assists", 0)
+                m.get("match_uid"), m.get("match_season"), m.get("result"), m.get("map_id"),
+                match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
+                match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
+                match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
+                h.get("hero_name", "Unknown"), h.get("play_time_seconds", 0),
+                h.get("kills", 0), h.get("deaths", 0), h.get("assists", 0)
             ]
             writer.writerow(row)
-
     return output.getvalue()
+
+
+def calculate_overall_stats(match_history):
+    """
+    Condenses a large list of matches into a tiny text summary string.
+    """
+    if not match_history:
+        return "No recent match history available."
+
+    total_games = len(match_history)
+    wins = sum(1 for m in match_history if m.get('result') == 'WIN')
+    losses = total_games - wins
+    win_rate = (wins / total_games) * 100
+
+    # Count most played heroes in this dataset
+    hero_counts = {}
+    for m in match_history:
+        # We look at the target_player's heroes
+        heroes = m.get("target_player", {}).get("heroes_played_stats", [])
+        for h in heroes:
+            name = h.get("hero_name", "Unknown")
+            hero_counts[name] = hero_counts.get(name, 0) + 1
+
+    # Sort top 3 heroes
+    top_heroes = sorted(hero_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_heroes_str = ", ".join([f"{h[0]} ({h[1]} games)" for h in top_heroes])
+
+    return f"""
+    OVERALL DATASET SUMMARY (Past {total_games} Matches):
+    - Win Rate: {win_rate:.1f}% ({wins} Wins, {losses} Losses)
+    - Top Heroes Played: {top_heroes_str}
+    - Note: Detailed logs provided below are only for the most recent {NUM_RECENT_MATCHES} games. Use this summary for long-term trends.
+    """
 
 
 # --- PART B: HERO DATABASE (CACHED) ---
@@ -285,41 +271,18 @@ def create_hero_id_map(hero_db):
 
 
 def sanitize_hero_data(raw_data):
-    if not raw_data:
-        return None
-
+    if not raw_data: return None
     clean_data = {
-        "id": raw_data.get("id"),
-        "name": raw_data.get("name"),
-        "role": raw_data.get("role"),
-        "attack_type": raw_data.get("attack_type"),
-        "difficulty": raw_data.get("difficulty"),
-        "bio": raw_data.get("bio"),
-        "team": raw_data.get("team"),
-        "lore": raw_data.get("lore"),
-        "transformations": [],
+        "id": raw_data.get("id"), "name": raw_data.get("name"),
+        "role": raw_data.get("role"), "attack_type": raw_data.get("attack_type"),
+        "difficulty": raw_data.get("difficulty"), "bio": raw_data.get("bio"),
         "abilities": []
     }
-
-    for transformation in raw_data.get("transformations", []):
-        clean_transformation = {
-            "id": transformation.get("transformation_id"),
-            "name": transformation.get("name"),
-            "health": transformation.get("health"),
-            "movement_speed": transformation.get("movement_speed")
-        }
-        clean_data["transformations"].append(clean_transformation)
-
     for ability in raw_data.get("abilities", []):
-        clean_ability = {
-            "id": ability.get("ability_id"),
+        clean_data["abilities"].append({
             "name": ability.get("name"),
-            "type": ability.get("type"),
             "description": ability.get("description"),
-            "additional_fields": ability.get("additional_fields"),
-        }
-        clean_data["abilities"].append(clean_ability)
-
+        })
     return clean_data
 
 
@@ -328,203 +291,191 @@ def initialize_hero_db():
     hero_db = {}
     headers = {'x-api-key': API_KEY}
     base_url = "https://marvelrivalsapi.com/api/v1/heroes/hero/"
-    progress_bar = st.progress(0, text="Initializing Hero Database...")
 
-    for i, hero_name in enumerate(TARGET_HEROES):
+    # We load silently to avoid UI clutter on every refresh
+    for hero_name in TARGET_HEROES:
         url = f"{base_url}{hero_name}"
         try:
             response = requests.get(url, headers=headers)
             if response.status_code == 200:
                 raw_data = response.json()
                 hero_db[hero_name.lower()] = sanitize_hero_data(raw_data)
-        except Exception as e:
-            print(f"Skipping hero {hero_name}: {e}")
-
-        progress_bar.progress((i + 1) / len(TARGET_HEROES), text=f"Loaded {hero_name}...")
-        time.sleep(0.05)
-
-    progress_bar.empty()
+        except:
+            pass
     return hero_db
 
 
-# --- PART C: DATA RETRIEVAL LOGIC ---
+# --- PART C: CORE LOGIC FOR BUILD CONTEXT ---
 
-def calculate_gemini_cost(token_count, input_cost=0.3):
-    return (token_count / 1_000_000) * input_cost
-
-
-def get_analysis_context(user_query, player_input, hero_db):
+def build_coach_context(player_input, hero_db):
     try:
         client = genai.Client(api_key=GOOGLE_API_KEY)
     except Exception as e:
-        st.error(f"Error configuring Gemini API: {e}")
-        return ""
+        return "", [], f"Error configuring Gemini API: {e}"
 
-    # 2. Build Static Context (Hero Info)
+    # 1. Fetch Player Data
+    player_data = get_player_data(player_input)
+    if not player_data:
+        return "", [], f"Could not find player: {player_input}"
+
+    uid = player_data.get("uid")
+    player_name = player_data.get('name')
+
+    # 2. Fetch History (V2) - We still fetch 50 (or user limit) for the CSV
+    v2_history_list = fetch_v2_match_history(uid, max_matches=MAX_MATCH_HISTORY_LEN)
+
+    if not v2_history_list:
+        return "", [], "Player found, but no match history detected."
+
+    # 3. Parallel Fetch Details (V1)
+    status_bar = st.progress(0, text="Downloading match details...")
+    full_match_history = []
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {executor.submit(get_match_detail, m["match_uid"]): m for m in v2_history_list}
+        completed = 0
+
+        for future in concurrent.futures.as_completed(futures):
+            details = future.result()
+            v2_data = futures[future]
+            season = v2_data.get("match_season")
+            minified = minify_match_data(details, uid, create_hero_id_map(hero_db), season=season)
+            if minified:
+                full_match_history.append(minified)
+
+            completed += 1
+            status_bar.progress(completed / len(v2_history_list),
+                                text=f"Analyzed match {completed}/{len(v2_history_list)}")
+
+    status_bar.empty()
+
+    # Sort by time (Newest First) to ensure we keep the latest games
+
+    # 1. Generate Summary of ALL downloaded matches (e.g., 50)
+    dataset_summary = calculate_overall_stats(full_match_history)
+
+    # 2. Slice only the LAST NUM_RECENT_MATCHES matches for the LLM Context
+    # This drastically reduces token count while keeping recent context high-res
+    recent_matches_for_llm = full_match_history[:NUM_RECENT_MATCHES]
+
+    # 3. Build the String
     static_context = " --- HERO DATABASE ---\n"
     for h_name, h_data in hero_db.items():
-        static_context += f"Info for {h_name}: {h_data}\n"
+        # Optimization: Only include name/role/abilities to save space
+        compact_hero = {k: v for k, v in h_data.items() if k in ['name', 'role', 'abilities']}
+        static_context += f"{h_name}: {compact_hero}\n"
 
-    # 3. Add player context (Coach Layer)
-    match_summaries = []
-    player_profile_str = ""
+    final_context_str = f"""
+    {static_context}
 
-    if player_input:
-        with st.status("Fetching Coach Data...", expanded=True) as status:
-            # Step A: Get UID via V1 Player Endpoint (still needed to resolve Name -> UID)
-            status.write("Fetching Player Profile...")
-            player_data = get_player_data(player_input)
+    --- PLAYER PROFILE: {player_name} ---
+    {dataset_summary}
 
-            if player_data:
-                uid = player_data.get("uid")
+    --- DETAILED LOGS (LAST NUM_RECENT_MATCHES GAMES ONLY) ---
+    {json.dumps(recent_matches_for_llm, indent=2)}
+    """
 
-                # Add high level stats
-                player_profile_str += f"\n--- PLAYER PROFILE ({player_data.get('name')}) ---\n"
-                stats = player_data.get('overall_stats', {})
-                ranked = stats.get('ranked', {})
-                player_profile_str += f"TOTAL MATCHES: {stats.get('total_matches')}\n"
-                player_profile_str += f"TOTAL WINS: {stats.get('total_wins')}\n"
-                player_profile_str += f"RANKED TOTAL MATCHES: {ranked.get('total_matches')}\n"
-                player_profile_str += f"RANKED WINS: {ranked.get('total_wins')}\n"
-                player_profile_str += f"RANKED KDA: {ranked.get('total_kills')}/{ranked.get('total_deaths')}\n"
-
-                # Step B: Get History via V2 Endpoint (Iterating Seasons)
-                status.write("Scanning Seasons for Match History...")
-                v2_history_list = fetch_v2_match_history(uid, max_matches=MAX_MATCH_HISTORY_LEN)
-                status.write(f"Found {len(v2_history_list)} recent matches.")
-
-                # Step C: Parallel Fetch of Details (V1 Match Endpoint)
-                # We need this because V2 history doesn't include Enemy Team Composition
-                status.write("Downloading detailed match logs...")
-
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    # Map future to match_uid
-                    futures = {
-                        executor.submit(get_match_detail, m["match_uid"]): m for m in v2_history_list
-                    }
-
-                    for future in concurrent.futures.as_completed(futures):
-                        details = future.result()
-                        # Minify will extract enemies and result
-                        v2_data = futures[future]
-                        season = v2_data.get("match_season")
-                        minified = minify_match_data(details, uid, create_hero_id_map(hero_db), season=season)
-
-                        if minified:
-                            match_summaries.append(minified)
-
-                status.update(label="Coach Data Ready!", state="complete", expanded=False)
-
-                # Save data to session state for CSV exporter
-                st.session_state["match_history_cache"] = match_summaries
-            else:
-                static_context += "\n(Could not fetch player data. API might be down or ID invalid.)\n"
-
-    # 4. Trimming Loop
-    final_context_str = ""
-    trim_message = st.empty()
-
-    while True:
-        matches_str = f"\n--- RECENT MATCH PERFORMANCE (Last {len(match_summaries)} Matches) ---\n"
-        matches_str += json.dumps(match_summaries, indent=2)
-        final_context_str = static_context + player_profile_str + matches_str
-
-        token_count = client.models.count_tokens(model="gemini-2.5-flash", contents=final_context_str).total_tokens
-
-        if token_count <= TOKEN_LIMIT:
-            cost = calculate_gemini_cost(token_count)
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Token Count", f"{token_count:,}")
-            col2.metric("Matches Included", len(match_summaries))
-            col3.metric("Est. Cost", f"${cost:.4f}")
-            break
-        else:
-            if not match_summaries:
-                break
-            match_summaries.pop()  # Remove oldest (last in list)
-
-    trim_message.empty()
-    return final_context_str
+    # We return 'full_match_history' as the second arg so the CSV button still gets all 50!
+    return final_context_str, full_match_history, f"Successfully loaded {len(full_match_history)} matches! (AI context optimized for last {NUM_RECENT_MATCHES})"
 
 
 # --- PART D: APP INTERFACE ---
 
-with st.sidebar:
-    # Input Player Name
-    st.header("Player Setup")
-    player_uid_input = st.text_input("Enter Player Name", value="FlipFlopper")
-    if "hero_db" not in st.session_state:
+st.title("🕷️ Marvel Rivals Hero Analyst")
+
+# Initialize Hero DB once
+if "hero_db" not in st.session_state:
+    with st.spinner("Initializing Hero Database..."):
         st.session_state.hero_db = initialize_hero_db()
-    st.success(f"Hero Database Loaded ({len(st.session_state.hero_db)} heroes)")
 
-    # CSV Download Button
-    st.divider()
-    st.header("Data Export")
-    if "match_history_cache" in st.session_state and st.session_state["match_history_cache"]:
-        csv_data = convert_history_to_csv(st.session_state["match_history_cache"])
+# --- STATE 1: SETUP SCREEN ---
+if not st.session_state.analysis_active:
+    st.markdown("### 1. Player Setup")
+    st.info("Enter a player name to download their last 100 matches and analyze performance.")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        player_input = st.text_input("Player Name", value="FlipFlopper", placeholder="Enter username...")
+    with col2:
+        st.write("")  # Spacer
+        st.write("")
+        if st.button("Fetch Match Data", type="primary", use_container_width=True):
+            if not player_input:
+                st.error("Please enter a player name.")
+            else:
+                context_str, matches, msg = build_coach_context(player_input, st.session_state.hero_db)
+                if matches:
+                    st.session_state.llm_context = context_str
+                    st.session_state.match_history_data = matches
+                    st.session_state.analysis_active = True
+                    st.rerun()  # Refresh to show chat interface
+                else:
+                    st.error(msg)
+
+# --- STATE 2: DASHBOARD & CHAT ---
+else:
+    # Top Bar: Actions
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        st.success(f"Data Loaded! ({len(st.session_state.match_history_data)} matches cached)")
+    with c2:
+        # Download Button
+        csv_data = convert_history_to_csv(st.session_state.match_history_data)
         st.download_button(
-            label="Download Match History",
+            label="📥 Download CSV",
             data=csv_data,
-            file_name=f"marvel_rivals_match_history.csv",
-            mime="text/csv"
+            file_name="marvel_rivals_history.csv",
+            mime="text/csv",
+            use_container_width=True
         )
-    else:
-        st.info("Run a query in the chat to fetch and enable data export.")
+    with c3:
+        if st.button("🔄 New Search", use_container_width=True):
+            st.session_state.analysis_active = False
+            st.session_state.match_history_data = []
+            st.session_state.llm_context = ""
+            st.rerun()
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
+    st.divider()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "I'm ready to coach! Ask me about specific matchups."}]
+    # Chat Interface
+    st.subheader("🤖 AI Coach Chat")
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-# --- PART E: CHAT INTERFACE ---
-if prompt := st.chat_input("Ask your coach..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message(prompt):
-        st.markdown(prompt)
+    if prompt := st.chat_input("Ask your coach about your performance..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    final_context = get_analysis_context(prompt, player_uid_input, st.session_state.hero_db)
+        # Gemini Logic
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
 
-    template = """
-    You are an expert eSports Coach for Marvel Rivals.
-    GOAL: Answer the user's question using the provided data.
-    DATA SOURCES:
-    1. HERO DATABASE: General stats and ability info.
-    2. RECENT MATCH PERFORMANCE: The user's actual last MAX_MATCH_HISTORY_LEN games.
-    INSTRUCTIONS:
-    - If the user asks about a specific enemy, look at the 'enemy_team_composition' in the match history. 
-    - Identify if they won or lost those specific games.
-    
-    Here's some lingo you should know:
-    - Vanguards can also be referred to as Tanks.
-    - Duelists can also be referred to as DPS i.e. heroes specializing in dealing lots of damage.
-    - Strategists can also be referred to Healers or Supports.
+        template = """
+        You are an expert eSports Coach for Marvel Rivals.
+        GOAL: Answer the user's question using the provided data.
 
-    CONTEXT:
-    {context}
+        DATA CONTEXT:
+        {context}
 
-    USER QUESTION:
-    {question}
-    """
+        USER QUESTION:
+        {question}
 
-    custom_prompt = PromptTemplate.from_template(template)
+        Provide a concise, strategic answer. If identifying problems, suggest specific fixes based on the hero's kit.
+        """
 
-    # For debugging
-    formatted_prompt = custom_prompt.format(context=final_context, question=prompt)
-    with st.expander("View Raw Prompt Sent to Gemini"):
-        st.code(formatted_prompt, language="text")
+        custom_prompt = PromptTemplate.from_template(template)
+        chain = custom_prompt | llm | StrOutputParser()
 
-    chain = custom_prompt | llm | StrOutputParser()
-
-    with st.chat_message("assistant"):
-        with st.spinner("Analyzing..."):
-            try:
-                response = chain.invoke({"context": final_context, "question": prompt})
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing match data..."):
+                try:
+                    response = chain.invoke({
+                        "context": st.session_state.llm_context,
+                        "question": prompt
+                    })
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    st.error(f"AI Error: {e}")

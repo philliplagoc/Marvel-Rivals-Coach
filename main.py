@@ -4,9 +4,6 @@
 #   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
 #     the MAX_MATCH_HISTORY_LEN most recent matches
 # TODO Consider caching my MAX_MATCH_HISTORY_LEN most recent matches
-# TODO Debug why the CSV I download doesn't align with how the Chatbot analyzes my match history i.e. I played Magneto
-#      18 times in my last 100 matches, but the Chatbot claims I only played him 10 times. When asking this
-#      multiple times, each time the answer changes.
 
 import os
 import requests
@@ -31,7 +28,7 @@ MODEL_NAME = "gpt-5-mini-2025-08-07"
 
 TOKEN_LIMIT = 400000 # Adjusted for typical GPT-4o-mini context window
 MAX_MATCH_HISTORY_LEN = 50
-NUM_RECENT_MATCHES = 10
+# NUM_RECENT_MATCHES = 50
 
 # Seasons to check (in order of priority)
 TARGET_SEASONS = [5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1]
@@ -244,7 +241,6 @@ def calculate_overall_stats(match_history):
     OVERALL DATASET SUMMARY (Past {total_games} Matches):
     - Win Rate: {win_rate:.1f}% ({wins} Wins, {losses} Losses)
     - Top Heroes Played: {top_heroes_str}
-    - Note: Detailed logs provided below are only for the most recent {NUM_RECENT_MATCHES} games. Use this summary for long-term trends.
     """
 
 
@@ -319,7 +315,7 @@ def build_coach_context(player_input, hero_db):
     uid = player_data.get("uid")
     player_name = player_data.get('name')
 
-    # 2. Fetch History (V2) - We still fetch 50 (or user limit) for the CSV
+    # 2. Fetch History (V2)
     v2_history_list = fetch_v2_match_history(uid, max_matches=MAX_MATCH_HISTORY_LEN)
 
     if not v2_history_list:
@@ -347,19 +343,15 @@ def build_coach_context(player_input, hero_db):
 
     status_bar.empty()
 
-    # Sort by time (Newest First) to ensure we keep the latest games
-
-    # 1. Generate Summary of ALL downloaded matches (e.g., 50)
+    # 1. Generate Summary of ALL downloaded matches
     dataset_summary = calculate_overall_stats(full_match_history)
 
-    # 2. Slice only the LAST NUM_RECENT_MATCHES matches for the LLM Context
-    # This drastically reduces token count while keeping recent context high-res
-    recent_matches_for_llm = full_match_history[:NUM_RECENT_MATCHES]
+    # 2. Generate CSV String for the LLM
+    csv_history_str = convert_history_to_csv(full_match_history)
 
     # 3. Build the String
     static_context = " --- HERO DATABASE ---\n"
     for h_name, h_data in hero_db.items():
-        # Optimization: Only include name/role/abilities to save space
         compact_hero = {k: v for k, v in h_data.items() if k in ['name', 'role', 'abilities']}
         static_context += f"{h_name}: {compact_hero}\n"
 
@@ -369,12 +361,13 @@ def build_coach_context(player_input, hero_db):
     --- PLAYER PROFILE: {player_name} ---
     {dataset_summary}
 
-    --- DETAILED LOGS (LAST {NUM_RECENT_MATCHES} GAMES ONLY) ---
-    {json.dumps(recent_matches_for_llm, indent=2)}
+    --- DETAILED MATCH LOGS (CSV FORMAT) ---
+    The following data is in CSV format. Columns include Match ID, Season, Result, Map, and specific Hero Stats.
+
+    {csv_history_str}
     """
 
-    # We return 'full_match_history' as the second arg so the CSV button still gets all 50!
-    return final_context_str, full_match_history, f"Successfully loaded {len(full_match_history)} matches! (AI context optimized for last {NUM_RECENT_MATCHES})"
+    return final_context_str, full_match_history, f"Successfully loaded {len(full_match_history)} matches! (Converted to CSV for AI analysis)"
 
 
 # --- PART D: APP INTERFACE ---
@@ -436,7 +429,7 @@ else:
     st.divider()
 
     # Chat Interface
-    st.subheader("🤖 AI Coach Chat (GPT-4o Mini)")
+    st.subheader("🤖 AI Coach Chat")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
@@ -453,6 +446,11 @@ else:
         template = """
         You are an expert eSports Coach for Marvel Rivals.
         GOAL: Answer the user's question using the provided data.
+        
+        NOTES:
+        - Vanguards can be referred to as Tanks.
+        - Strategists can be referred to as Healers.
+        - Duelists can be referred to as DPS.
 
         DATA CONTEXT:
         {context}
@@ -467,7 +465,7 @@ else:
         chain = custom_prompt | llm | StrOutputParser()
 
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing match data with OpenAI..."):
+            with st.spinner("Analyzing match data..."):
                 try:
                     response = chain.invoke({
                         "context": st.session_state.llm_context,

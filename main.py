@@ -215,7 +215,7 @@ def convert_history_to_csv(match_data):
             match_stats = enemy.get("aggregated_stats", {})
             for h in enemy.get("heroes_played_stats", []):
                 # Only log significant enemy playtime to save tokens
-                if h.get("playtime_seconds", 0) > 30:
+                if h.get("play_time_seconds", 0) > 30:
                     writer.writerow([
                         m_id, season, result, map_id, "ENEMY",
                         match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
@@ -387,7 +387,7 @@ def build_coach_context(player_input, hero_db):
 
 # --- PART D: APP INTERFACE ---
 
-st.title("🕷️ Marvel Rivals Hero Analyst (OpenAI)")
+st.title("🕷️ Marvel Rivals Hero Analyst")
 
 # Initialize Hero DB once
 if "hero_db" not in st.session_state:
@@ -397,7 +397,7 @@ if "hero_db" not in st.session_state:
 # --- STATE 1: SETUP SCREEN ---
 if not st.session_state.analysis_active:
     st.markdown("### 1. Player Setup")
-    st.info("Enter a player name to download their last 100 matches and analyze performance.")
+    st.info(f"Enter a player name to download their last {MAX_MATCH_HISTORY_LEN} matches and analyze performance.")
 
     col1, col2 = st.columns([3, 1])
     with col1:

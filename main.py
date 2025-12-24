@@ -3,12 +3,9 @@
 #     Example: "How well did I do in Season 3.5?" -> Only look at match history in season 3.5
 #   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
 #     the MAX_MATCH_HISTORY_LEN most recent matches
-# TODO Consider caching my MAX_MATCH_HISTORY_LEN most recent matches
 
 import os
 import requests
-import json
-import time
 import concurrent.futures
 import csv
 import io
@@ -62,7 +59,7 @@ def get_player_data(player_identifier):
         print(f"Error fetching profile {player_identifier}: {e}")
         return None
 
-
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_v2_match_history(player_uid, max_matches=MAX_MATCH_HISTORY_LEN):
     """Iterates through seasons using the V2 endpoint to find the most recent matches."""
     all_history_items = []
@@ -94,7 +91,7 @@ def fetch_v2_match_history(player_uid, max_matches=MAX_MATCH_HISTORY_LEN):
     all_history_items.sort(key=lambda x: x.get('match_time_stamp', 0), reverse=True)
     return all_history_items[:max_matches]
 
-
+st.cache_data(show_spinner=False)
 def get_match_detail(match_uid):
     """Fetches detailed stats for a specific match (V1)."""
     url = f"https://marvelrivalsapi.com/api/v1/match/{match_uid}"

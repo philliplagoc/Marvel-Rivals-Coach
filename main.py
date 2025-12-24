@@ -1,8 +1,4 @@
-# TODO Consider architecture change. Instead of just looking at the MAX_MATCH_HISTORY_LEN most recent matches...
-#   - When asked about match history, convert the user's query into a valid request for the API
-#     Example: "How well did I do in Season 3.5?" -> Only look at match history in season 3.5
-#   - For vague requests about match history (e.g., How well did I do against Doctor Strange), default to retrieving
-#     the MAX_MATCH_HISTORY_LEN most recent matches
+# TODO Add Map Name to CSV
 
 import os
 import requests

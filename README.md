@@ -1,7 +1,3 @@
-Here is a professional, employer-ready README based on the code provided. It highlights not just *what* the app does, but *how* it solves engineering challenges (like API latency and LLM token limits), which is exactly what hiring managers look for.
-
----
-
 # 🕷️ Marvel Rivals AI Coach
 
 > **An LLM-powered analytics dashboard that transforms raw match data into personalized, strategic coaching for Marvel Rivals players.**

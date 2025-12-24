@@ -53,7 +53,7 @@ graph TD
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/marvel-rivals-coach.git
+git clone https://github.com/philliplagoc/Marvel-Rivals-Coach.git
 cd marvel-rivals-coach
 
 ```

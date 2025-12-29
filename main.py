@@ -1,4 +1,4 @@
-# TODO Add Map Name to CSV
+# TODO Add a button that uses API endpoint to refresh match data
 
 import os
 import requests
@@ -28,6 +28,11 @@ TARGET_SEASONS = [5, 4.5, 4, 3.5, 3, 2.5, 2, 1.5, 1]
 # 2. Configuration & Setup
 st.set_page_config(page_title="Marvel Rivals Analyst", page_icon="🕷️", layout="wide")
 
+# Add debug option
+with st.sidebar:
+    st.header("Developer Options")
+    show_full_prompt = st.toggle("Show LLM Prompt (Debug)", value=False)
+
 # Initialize Session State Variables
 if "analysis_active" not in st.session_state:
     st.session_state.analysis_active = False
@@ -42,7 +47,7 @@ if "messages" not in st.session_state:
     ]
 
 
-# --- PART A: API HELPERS (Unchanged) ---
+# --- PART A: API HELPERS ---
 
 def get_player_data(player_identifier):
     """Fetches player profile (V1) to resolve Name -> UID and get high-level stats."""
@@ -130,7 +135,7 @@ def process_player_stats_in_match(player_data, hero_id_map):
     }
 
 
-def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=None):
+def minify_match_data(full_match_json, target_player_uid, hero_id_map, map_db, forced_map_id=None, season=None):
     """Extracts only essential data for the LLM."""
     if not full_match_json or "match_details" not in full_match_json:
         return None
@@ -139,6 +144,9 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=No
     match_uid = md.get("match_uid")
     target_camp = -1
     user_data = None
+    # Use ID from V2 history endpoint if available
+    raw_map_id = forced_map_id if forced_map_id is not None else md.get("map_id")
+    map_name = map_db.get(str(raw_map_id), f"Unknown Map: {raw_map_id}")
 
     for p in md.get("match_players", []):
         if str(p.get("player_uid")) == str(target_player_uid):
@@ -159,7 +167,8 @@ def minify_match_data(full_match_json, target_player_uid, hero_id_map, season=No
         "match_uid": match_uid,
         "match_season": season,
         "result": "WIN" if user_data.get("is_win") == 1 else "LOSE",
-        "map_id": md.get("map_id"),
+        "map_id": raw_map_id,
+        "map_name": map_name,
         "target_player": target_player_stats,
         "enemies": enemies
     }
@@ -170,7 +179,7 @@ def convert_history_to_csv(match_data):
     output = io.StringIO()
     writer = csv.writer(output)
     headers = [
-        "Match ID", "Season", "Result", "Map ID", "Side", "Match Total Kills",
+        "Match ID", "Season", "Result", "Map ID", "Map Name", "Side", "Match Total Kills",
         "Match Total Deaths", "Match Total Assists", "Match Total Damage Done",
         "Match Total Healing Done", "Match Total Damage Taken", "Hero Name",
         "Hero Play Time (s)", "Hero Kills", "Hero Deaths", "Hero Assists"
@@ -183,6 +192,7 @@ def convert_history_to_csv(match_data):
         season = m.get("match_season")
         result = m.get("result")
         map_id = m.get("map_id")
+        map_name = m.get("map_name", "Unknown")
 
         # Process USER (Me)
         match_stats = m.get("target_player", {}).get("aggregated_stats", {})
@@ -194,7 +204,7 @@ def convert_history_to_csv(match_data):
 
         for h in user_heroes:
             writer.writerow([
-                m_id, season, result, map_id, "ME",
+                m_id, season, result, map_id, map_name, "ME",
                 match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
                 match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
                 match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
@@ -210,7 +220,7 @@ def convert_history_to_csv(match_data):
                 # Only log significant enemy playtime to save tokens
                 if h.get("play_time_seconds", 0) > 30:
                     writer.writerow([
-                        m_id, season, result, map_id, "ENEMY",
+                        m_id, season, result, map_id, map_name, "ENEMY",
                         match_stats.get("total_kills", 0), match_stats.get("total_deaths", 0),
                         match_stats.get("total_assists", 0), match_stats.get("total_hero_damage", 0),
                         match_stats.get("total_hero_heal", 0), match_stats.get("total_damage_taken", 0),
@@ -252,7 +262,7 @@ def calculate_overall_stats(match_history):
     """
 
 
-# --- PART B: HERO DATABASE (CACHED) ---
+# --- PART B: HERO AND MAP DATABASE (CACHED) ---
 TARGET_HEROES = [
     "Adam Warlock", "Angela", "Black Panther", "Black Widow", "Blade", "Bruce Banner",
     "Captain America", "Cloak & Dagger", "Daredevil", "Doctor Strange", "Emma Frost",
@@ -307,10 +317,52 @@ def initialize_hero_db():
             pass
     return hero_db
 
+@st.cache_data(ttl=3600, show_spinner="Fetching Map Data...")
+def initialize_map_db():
+    map_db = {}
+    headers = {'x-api-key': API_KEY}
+    url = "https://marvelrivalsapi.com/api/v1/maps"
+
+    # Start with page 1, limit 50
+    current_page = 1
+    limit = 50
+    has_more = True
+
+    while has_more:
+        params = {
+            "limit": limit,
+            "page": current_page
+        }
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                maps_list = data.get("maps", [])
+                total_maps = data.get("total_maps", 0)
+
+                # Populate dictionary (id: name}
+                for m in maps_list:
+                    map_db[str(m.get("id"))] = m.get("name")
+
+                # Pagination logic
+                # If we collected fewer than total, go to next page
+                if (len(map_db) < total_maps and len(maps_list) > 0):
+                    current_page += 1
+                else:
+                    has_more = False
+            else:
+                print(f"Map API Error: {response.status_code}")
+                has_more = False
+        except Exception as e:
+            print(f"Error fetching Map Data: {e}")
+            has_more = False
+
+    return map_db
+
 
 # --- PART C: CORE LOGIC FOR BUILD CONTEXT ---
 
-def build_coach_context(player_input, hero_db):
+def build_coach_context(player_input, hero_db, map_db):
     # Basic API Key Validation
     if not OPENAI_API_KEY:
         return "", [], "Error: OPENAI_API_KEY is missing from environment variables."
@@ -341,7 +393,14 @@ def build_coach_context(player_input, hero_db):
             details = future.result()
             v2_data = futures[future]
             season = v2_data.get("match_season")
-            minified = minify_match_data(details, uid, create_hero_id_map(hero_db), season=season)
+            v2_map_id = v2_data.get("match_map_id")
+            minified = minify_match_data(details,
+                                         uid,
+                                         create_hero_id_map(hero_db),
+                                         map_db,
+                                         forced_map_id=v2_map_id,
+                                         season=season
+            )
             if minified:
                 full_match_history.append(minified)
 
@@ -387,6 +446,11 @@ if "hero_db" not in st.session_state:
     with st.spinner("Initializing Hero Database..."):
         st.session_state.hero_db = initialize_hero_db()
 
+# Initialize Map DB once
+if "map_db" not in st.session_state:
+    with st.spinner("Initializing Map Database..."):
+        st.session_state.map_db = initialize_map_db()
+
 # --- STATE 1: SETUP SCREEN ---
 if not st.session_state.analysis_active:
     st.markdown("### 1. Player Setup")
@@ -402,7 +466,7 @@ if not st.session_state.analysis_active:
             if not player_input:
                 st.error("Please enter a player name.")
             else:
-                context_str, matches, msg = build_coach_context(player_input, st.session_state.hero_db)
+                context_str, matches, msg = build_coach_context(player_input, st.session_state.hero_db, st.session_state.map_db)
                 if matches:
                     st.session_state.llm_context = context_str
                     st.session_state.match_history_data = matches
@@ -486,6 +550,17 @@ else:
         """
 
         custom_prompt = PromptTemplate.from_template(template)
+
+        # Logic to show the formatted prompt
+        input_variables = {
+            "context": st.session_state.llm_context,
+            "question": prompt
+        }
+        if show_full_prompt:
+            formatted_prompt = custom_prompt.format(**input_variables)
+            with st.expander("DEBUG: Full Prompt Sent to LLM", expanded=False):
+                st.code(formatted_prompt, language="markdown")
+
         chain = custom_prompt | llm | StrOutputParser()
 
         with st.chat_message("assistant"):

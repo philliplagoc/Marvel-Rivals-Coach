@@ -7,6 +7,7 @@ import csv
 import io
 import streamlit as st
 from dotenv import load_dotenv
+from jinja2.lexer import TOKEN_DOT
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -59,6 +60,23 @@ def get_player_data(player_identifier):
     except Exception as e:
         print(f"Error fetching profile {player_identifier}: {e}")
         return None
+
+
+def request_player_update(player_name):
+    """
+    Triggers server-side update for the player.
+    NOTE: Rate limited to once every 30 minutes per player.
+    """
+    url = f"https://marvelrivalsapi.com/api/v1/player/{player_name}/update"
+    headers = {'x-api-key': API_KEY}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"success": False, "message": f"Server Error: {response.status_code}"}
+    except Exception as e:
+        return {"success": False, "message": f"Request failed: {str(e)}"}
 
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_v2_match_history(player_uid, max_matches=MAX_MATCH_HISTORY_LEN):
@@ -470,6 +488,7 @@ if not st.session_state.analysis_active:
                 if matches:
                     st.session_state.llm_context = context_str
                     st.session_state.match_history_data = matches
+                    st.session_state.current_player_name = player_input
                     st.session_state.analysis_active = True
                     st.rerun()  # Refresh to show chat interface
                 else:
@@ -478,7 +497,7 @@ if not st.session_state.analysis_active:
 # --- STATE 2: DASHBOARD & CHAT ---
 else:
     # Top Bar: Actions
-    c1, c2, c3 = st.columns([2, 1, 1])
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     with c1:
         st.success(f"Data Loaded! ({len(st.session_state.match_history_data)} matches cached)")
     with c2:
@@ -492,6 +511,17 @@ else:
             use_container_width=True
         )
     with c3:
+        if st.button("Refresh Match History", help="Queue an update (Max once every 30m)", use_container_width=True):
+            target_uid = st.session_state.match_history_data[0]['target_player']['player_uid']
+            if "current_player_name" in st.session_state:
+                res = request_player_update(st.session_state.current_player_name)
+                if res.get("success"):
+                    st.toast(f"{res.get('message')}", icon='🚀')
+                else:
+                    st.toast(f"{res.get('message')}", icon='⏳')
+            else:
+                st.error("Player name lost. Please start a New Search.")
+    with c4:
         if st.button("🔄 New Search", use_container_width=True):
             st.session_state.analysis_active = False
             st.session_state.match_history_data = []

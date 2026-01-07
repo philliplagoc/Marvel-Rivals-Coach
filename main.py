@@ -31,6 +31,7 @@ st.set_page_config(page_title="Marvel Rivals Analyst", page_icon="🕷️", layo
 with st.sidebar:
     st.header("Developer Options")
     show_full_prompt = st.toggle("Show LLM Prompt (Debug)", value=False)
+    show_player_debug = st.toggle("Show Player Being Searched", value=False)
 
 # Initialize Session State Variables
 if "analysis_active" not in st.session_state:
@@ -482,6 +483,8 @@ if not st.session_state.analysis_active:
             if not player_input:
                 st.error("Please enter a player name.")
             else:
+                if show_player_debug:
+                    st.info(f"DEBUG: Searching for player {player_input}")
                 context_str, matches, msg = build_coach_context(player_input, st.session_state.hero_db, st.session_state.map_db)
                 if matches:
                     st.session_state.llm_context = context_str

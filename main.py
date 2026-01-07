@@ -1,5 +1,3 @@
-# TODO Add a button that uses API endpoint to refresh match data
-
 import os
 import requests
 import concurrent.futures

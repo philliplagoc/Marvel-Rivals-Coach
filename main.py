@@ -455,7 +455,7 @@ def build_coach_context(player_input, hero_db, map_db):
 
 # --- PART D: APP INTERFACE ---
 
-st.title("🕷️ Marvel Rivals Hero Analyst")
+st.title("Marvel Rivals Hero Analyst")
 
 # Initialize Hero DB once
 if "hero_db" not in st.session_state:
@@ -502,7 +502,7 @@ else:
         # Download Button
         csv_data = convert_history_to_csv(st.session_state.match_history_data)
         st.download_button(
-            label="📥 Download CSV",
+            label="Download CSV",
             data=csv_data,
             file_name="marvel_rivals_history.csv",
             mime="text/csv",
@@ -518,9 +518,9 @@ else:
                 else:
                     st.toast(f"{res.get('message')}", icon='⏳')
             else:
-                st.error("Player name lost. Please start a New Search.")
+                st.error("Player name lost. Please start again.")
     with c4:
-        if st.button("🔄 New Search", use_container_width=True):
+        if st.button("Input New Player", use_container_width=True):
             st.session_state.analysis_active = False
             st.session_state.match_history_data = []
             st.session_state.llm_context = ""
@@ -529,7 +529,7 @@ else:
     st.divider()
 
     # Chat Interface
-    st.subheader("🤖 AI Coach Chat")
+    st.subheader("AI Coach Chat")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):

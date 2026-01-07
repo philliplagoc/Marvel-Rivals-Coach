@@ -2,6 +2,8 @@
 
 An LLM-powered chatbot that uses raw multiplayer match data for personalized coaching insights.
 
+Try it out [here!](https://marvel-rivals-coach.streamlit.app/)
+
 ## Overview
 
 * Fetches real player and match data from the [Marvel Rivals API](https://marvelrivalsapi.com/)
